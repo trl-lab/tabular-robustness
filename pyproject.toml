@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tabreasbench"
+version = "0.1.0"
+authors = [
+    { name = "Your Name", email = "your.email@example.com" },
+]
+description = "A benchmark suite for table reasoning capabilities of language models"
+readme = "README.md"
+requires-python = ">=3.8"
+license = "MIT"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Operating System :: OS Independent",
+]
+dependencies = [
+    "pandas",
+    "tqdm",
+    "ollama",
+    "numpy",
+]
+
+[project.scripts]
+tabreasbench = "tabreasbench.cli:main"
+
+[tool.setuptools]
+packages = ["tabreasbench"]
+package-data = { "tabreasbench" = ["data/*", "data/scaledDB/*/*"] } 
