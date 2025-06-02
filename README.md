@@ -2,7 +2,7 @@
 
 This repository contains the benchmark suite and replication package for our paper "How well do LLMs reason over tabular data, really?". It allows you to reproduce our benchmark results and evaluate language models on their table reasoning capabilities.
 
-[Read our paper](https://arxiv.org/abs/2402.19427) for a detailed analysis of the benchmark results and findings.
+[Read our paper](https://arxiv.org/abs/2505.07453) for a detailed analysis of the benchmark results and findings.
 
 ## Testing models
 
