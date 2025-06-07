@@ -28,7 +28,9 @@ ollama pull qwen2.5:32b
 You can install TabReasBench using pip:
 
 ```bash
-pip install tabreasbench
+git clone https://github.com/trl-lab/tabular-robustness/
+cd tabular-robustness
+pip install .
 ```
 
 ### Running the Benchmarks
