@@ -1,6 +1,6 @@
 # How well do LLMs reason over tabular data, really?
 
-This repository contains the benchmark suite and replication package for our paper "How well do LLMs reason over tabular data, really?". It allows you to reproduce our benchmark results and evaluate language models on their table reasoning capabilities.
+This repository contains the benchmark suite and replication package for our paper "How well do LLMs reason over tabular data, really?", which was published at the 4th Table Representation Learning Workshop at ACL 2025. It allows you to reproduce our benchmark results and evaluate language models on their table reasoning capabilities.
 
 [Read our paper](https://www.alphaxiv.org/abs/2505.07453) for a detailed analysis of the benchmark results and findings.
 
@@ -65,17 +65,16 @@ output_dir/
 If you use our test code in your research, please cite our paper:
 
 ```bibtex
-@article{wolff2025well,
+@inproceedings{wolff2025well,
   title={How well do LLMs reason over tabular data, really?},
   author={Wolff, Cornelius and Hulsebos, Madelon},
-  journal={arXiv preprint arXiv:2505.07453},
-  year={2025}
+  booktitle={The 4th Table Representation Learning Workshop at ACL 2025}
 }
 ```
 
 Plain text citation:
 ```
-Wolff, C., & Hulsebos, M. (2025). How well do LLMs reason over tabular data, really?. arXiv preprint arXiv:2505.07453.
+Wolff, C., & Hulsebos, M. How well do LLMs reason over tabular data, really?. In The 4th Table Representation Learning Workshop at ACL 2025.
 ```
 
 ## License
