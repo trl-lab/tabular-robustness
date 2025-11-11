@@ -52,7 +52,7 @@ def generate_prompts(question: str, tables: Dict[str, pd.DataFrame]) -> str:
     """Generate a detailed prompt string using provided tables and a question."""
     prompt = "Answer the question based on these tables:\n"
     for table_name, table_df in tables.items():
-        prompt += f"\nTable: {table_name}\n{table_df.to_string(index=False)}\n"
+        prompt += f"\nTable: {table_name}\n{table_df.to_csv()}\n"
     
     prompt += f"\nQuestion: {question}\n"
     prompt += """This question has only one correct answer. Please

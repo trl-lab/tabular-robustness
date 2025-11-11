@@ -3,9 +3,9 @@ import os
 from pathlib import Path
 from typing import Optional
 
-from .run_benchmark import run_benchmark_suite
-from .evaluate_benchmark_results import evaluate_benchmark_results
-from .aggregate_evaluation_results import generate_combined_table, generate_latex_tables, save_results
+from run_benchmark import run_benchmark_suite
+from evaluate_benchmark_results import evaluate_benchmark_results
+from aggregate_evaluation_results import generate_combined_table, generate_latex_tables, save_results
 
 def main():
     """Main entry point for the tabreasbench command."""
