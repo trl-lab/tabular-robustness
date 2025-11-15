@@ -1,5 +1,7 @@
 import argparse
 import json
+import math
+import random
 import re
 from collections import defaultdict
 from io import StringIO
@@ -9,6 +11,12 @@ from typing import Any, Dict, Iterable
 import pandas as pd
 from tqdm import tqdm
 
+try:
+    # Optional import for loading datasets from Hugging Face
+    from datasets import load_dataset
+except Exception:  # pragma: no cover - optional dependency
+    load_dataset = None
+
 from src.llm_interface import get_llm_response, get_openai_response
 
 
@@ -17,14 +25,77 @@ def should_use_openai(model_name: str) -> bool:
     return model_name.startswith("gpt-") and "oss" not in model_name
 
 
-def load_samples(path: Path) -> Iterable[Dict[str, Any]]:
-    """Yield one parsed JSON object per line from a JSONL file."""
-    with path.open("r", encoding="utf-8") as handle:
-        for line in handle:
-            line = line.strip()
-            if not line:
-                continue
-            yield json.loads(line)
+# Local JSONL loading removed. Dataset is loaded from Hugging Face via
+# `load_samples_from_hf` only.
+
+
+def load_samples_from_hf(dataset_id: str, split: str = "test", hf_token: str | None = None) -> Iterable[Dict[str, Any]]:
+    """Yield samples from a Hugging Face dataset.
+
+    The function expects the dataset to contain fields compatible with the
+    benchmark: `id`, `question`, `tables`, `correct_answer`, `qtype`, `scale`,
+    and `benchmark_type`. It yields dicts with the same keys as `load_samples`.
+    If the `datasets` library is not installed an informative RuntimeError is raised.
+    """
+    if load_dataset is None:
+        raise RuntimeError(
+            "The 'datasets' library is required to load Hugging Face datasets. "
+            "Install it with: pip install datasets"
+        )
+
+    # Pass token to `load_dataset` if provided to access private datasets.
+    load_kwargs = {}
+
+    try:
+        ds = load_dataset(dataset_id, split=split, token=hf_token)
+    except ValueError as exc:
+        raise RuntimeError(
+            f"Failed to load Hugging Face dataset '{dataset_id}' (split='{split}'). "
+            "If the dataset is private, ensure --hf-token is set and valid, and verify the split name."
+        ) from exc
+
+    for item in ds:
+        # Convert to plain dict and provide compatibility with existing code
+        record = dict(item)
+        # Some datasets use different field names for the correct answer
+        if "correct answer" in record and "correct_answer" not in record:
+            record["correct_answer"] = record["correct answer"]
+        yield record
+
+
+def sample_records_by_share(
+    records: Iterable[Dict[str, Any]], share: float, rng: random.Random | None = None
+) -> list[Dict[str, Any]]:
+    """Return a random subset of records keeping up to `share` of each (scale, qtype)."""
+
+    if share <= 0.0:
+        return []
+    records_list = list(records)
+    if share >= 1.0:
+        return records_list
+
+    rng = rng or random.Random()
+    groups: Dict[tuple[str, str], list[Dict[str, Any]]] = defaultdict(list)
+    for record in records_list:
+        key = (
+            record.get("scale", "unknown"),
+            record.get("qtype", "unknown"),
+        )
+        groups[key].append(record)
+
+    sampled: list[Dict[str, Any]] = []
+    for group_records in groups.values():
+        total = len(group_records)
+        quota = min(total, math.ceil(total * share))
+        if quota <= 0:
+            continue
+        if quota >= total:
+            sampled.extend(group_records)
+        else:
+            sampled.extend(rng.sample(group_records, quota))
+
+    rng.shuffle(sampled)
+    return sampled
 
 
 def format_tables(tables_blob: str) -> str:
@@ -102,8 +173,14 @@ def aggregate_counts(counter: Dict[str, Dict[str, int]]) -> Dict[str, Dict[str, 
     return summary
 
 
+def parse_share(value: str) -> float:
+    share = float(value)
+    if not 0.0 <= share <= 1.0:
+        raise argparse.ArgumentTypeError("--share must be between 0 and 1")
+    return share
+
+
 def run_simple_benchmark(
-    input_path: Path,
     output_path: Path,
     summary_path: Path,
     model: str,
@@ -111,8 +188,14 @@ def run_simple_benchmark(
     force_openai: bool,
     force_judge_openai: bool,
     max_samples: int | None,
+    hf_dataset: str,
+    hf_split: str = "train",
+    hf_token: str | None = None,
+    share: float = 1.0,
 ) -> None:
-    samples = list(load_samples(input_path))
+    # Always load from Hugging Face dataset (the CLI controls which dataset).
+    samples = list(load_samples_from_hf(hf_dataset, split=hf_split, hf_token=hf_token))
+    samples = sample_records_by_share(samples, share)
     if max_samples is not None:
         samples = samples[:max_samples]
 
@@ -223,9 +306,8 @@ def run_simple_benchmark(
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run a simplified table benchmark from JSONL data.")
+    parser = argparse.ArgumentParser(description="Run a simplified table benchmark using a Hugging Face dataset.")
     parser.add_argument("--model", required=True, help="LLM model name for answering questions.")
-    parser.add_argument("--input", default="test.jsonl", help="Path to the JSONL file with benchmark samples.")
     parser.add_argument(
         "--output",
         default="simple_results.jsonl",
@@ -257,17 +339,36 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Limit the number of samples processed from the input file.",
     )
+    parser.add_argument(
+        "--hf-dataset",
+        default="trl-lab/tabular-reasoning",
+        help="Hugging Face dataset identifier to load.",
+    )
+    parser.add_argument(
+        "--hf-split",
+        default="test",
+        help="Which split to load from the Hugging Face dataset (default: test).",
+    )
+    parser.add_argument(
+        "--hf-token",
+        default=None,
+        help="Optional Hugging Face token to access private datasets (passed to datasets.load_dataset via use_auth_token).",
+    )
+    parser.add_argument(
+        "--share",
+        type=parse_share,
+        default=1.0,
+        help="Fraction of samples per (scale, qtype) to evaluate (0-1).",
+    )
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
-    input_path = Path(args.input)
     output_path = Path(args.output)
     summary_path = Path(args.summary)
 
     run_simple_benchmark(
-        input_path=input_path,
         output_path=output_path,
         summary_path=summary_path,
         model=args.model,
@@ -275,6 +376,10 @@ def main() -> None:
         force_openai=args.use_openai,
         force_judge_openai=args.judge_use_openai,
         max_samples=args.max_samples,
+        hf_dataset=args.hf_dataset,
+        hf_split=args.hf_split,
+        hf_token=args.hf_token,
+        share=args.share,
     )
 
 
