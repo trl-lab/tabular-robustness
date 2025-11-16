@@ -174,3 +174,4 @@ cython_debug/
 .pypirc
 **.jsonl
 **.csv
+**.DS_Store

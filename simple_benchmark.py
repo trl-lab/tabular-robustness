@@ -7,26 +7,28 @@ from collections import defaultdict
 from io import StringIO
 from pathlib import Path
 from typing import Any, Dict, Iterable
+import torch
 
 import pandas as pd
 from tqdm import tqdm
 
 try:
-    # Optional import for loading datasets from Hugging Face
     from datasets import load_dataset
-except Exception:  # pragma: no cover - optional dependency
+except Exception:
     load_dataset = None
 
-from src.llm_interface import get_llm_response, get_openai_response
+try: 
+    from vllm import LLM, SamplingParams
+except Exception:
+    LLM = None
+    SamplingParams = None
+
+from tabreasbench import get_llm_response, get_openai_response, get_llm_responses
 
 
 def should_use_openai(model_name: str) -> bool:
     """Return True when the provided model should be queried via OpenAI."""
     return model_name.startswith("gpt-") and "oss" not in model_name
-
-
-# Local JSONL loading removed. Dataset is loaded from Hugging Face via
-# `load_samples_from_hf` only.
 
 
 def load_samples_from_hf(dataset_id: str, split: str = "test", hf_token: str | None = None) -> Iterable[Dict[str, Any]]:
@@ -192,6 +194,8 @@ def run_simple_benchmark(
     hf_split: str = "train",
     hf_token: str | None = None,
     share: float = 1.0,
+    vllm_batch_size: int = 16,
+    vllm_world_size: int | None = None,
 ) -> None:
     # Always load from Hugging Face dataset (the CLI controls which dataset).
     samples = list(load_samples_from_hf(hf_dataset, split=hf_split, hf_token=hf_token))
@@ -212,78 +216,212 @@ def run_simple_benchmark(
     records = []
 
     # Phase 1: Generate answers
-    for sample in tqdm(samples, desc="Answering questions"):
-        benchmark_type = sample.get("benchmark_type", "base")
-        question = sample.get("question", "")
-        tables_blob = sample.get("tables", "")
-        correct_answer = sample.get("correct_answer") or sample.get("correct answer")
-        qtype = sample.get("qtype", "unknown")
-        scale = sample.get("scale", "unknown")
+    if use_openai:
+        # Per-sample OpenAI calls (unchanged behavior)
+        for sample in tqdm(samples, desc="Answering questions"):
+            benchmark_type = sample.get("benchmark_type", "base")
+            question = sample.get("question", "")
+            tables_blob = sample.get("tables", "")
+            correct_answer = sample.get("correct_answer") or sample.get("correct answer")
+            qtype = sample.get("qtype", "unknown")
+            scale = sample.get("scale", "unknown")
 
-        overall["total"] += 1
-        by_qtype[qtype]["total"] += 1
-        by_scale[scale]["total"] += 1
+            overall["total"] += 1
+            by_qtype[qtype]["total"] += 1
+            by_scale[scale]["total"] += 1
 
-        prompt = build_question_prompt(question, tables_blob)
+            prompt = build_question_prompt(question, tables_blob)
 
-        record = {
-            "id": sample.get("id"),
-            "scale": scale,
-            "qtype": qtype,
-            "question": question,
-            "correct_answer": correct_answer,
-            "benchmark_type": benchmark_type,
-            "llm_answer": None,
-            "judge_response": None,
-            "evaluation_result": None,
-            "model": model,
-            "judge_model": judge_model,
-        }
+            record = {
+                "id": sample.get("id"),
+                "scale": scale,
+                "qtype": qtype,
+                "question": question,
+                "correct_answer": correct_answer,
+                "benchmark_type": benchmark_type,
+                "llm_answer": None,
+                "judge_response": None,
+                "evaluation_result": None,
+                "model": model,
+                "judge_model": judge_model,
+            }
 
-        try:
-            answer = call_model(prompt, model, use_openai)
-            record["llm_answer"] = answer
-        except Exception as exc:
-            record["evaluation_result"] = "llm_error"
-            record["error"] = str(exc)
-            overall["evaluation_failed"] += 1
+            try:
+                answer = call_model(prompt, model, use_openai)
+                record["llm_answer"] = answer
+            except Exception as exc:
+                record["evaluation_result"] = "llm_error"
+                record["error"] = str(exc)
+                overall["evaluation_failed"] += 1
 
-        records.append(record)
+            records.append(record)
+    else:
+        # Use vLLM batched generation for the answering model
+        prompts: list[str] = []
+        for sample in samples:
+            benchmark_type = sample.get("benchmark_type", "base")
+            question = sample.get("question", "")
+            tables_blob = sample.get("tables", "")
+            correct_answer = sample.get("correct_answer") or sample.get("correct answer")
+            qtype = sample.get("qtype", "unknown")
+            scale = sample.get("scale", "unknown")
+
+            overall["total"] += 1
+            by_qtype[qtype]["total"] += 1
+            by_scale[scale]["total"] += 1
+
+            prompt = build_question_prompt(question, tables_blob)
+
+            record = {
+                "id": sample.get("id"),
+                "scale": scale,
+                "qtype": qtype,
+                "question": question,
+                "correct_answer": correct_answer,
+                "benchmark_type": benchmark_type,
+                "llm_answer": None,
+                "judge_response": None,
+                "evaluation_result": None,
+                "model": model,
+                "judge_model": judge_model,
+            }
+
+            prompts.append(prompt)
+            records.append(record)
+
+        print("Length of prompts:", len(prompts))
+        
+        llm = LLM(model=model, tensor_parallel_size=vllm_world_size, max_num_seqs=vllm_batch_size, max_model_len=14096)
+        sampling_params = SamplingParams(max_tokens=2048)
+
+        # Generate in batches to keep memory reasonable and allow vLLM to
+        # utilize multiple GPUs when configured via the world_size argument.
+        for start in tqdm(
+            range(0, len(prompts), vllm_batch_size),
+            desc="Answering questions",
+            total=math.ceil(len(prompts) / vllm_batch_size) if len(prompts) else 0,
+        ):
+            end = min(len(prompts), start + vllm_batch_size)
+            batch_prompts = prompts[start:end]
+            try:
+                responses = get_llm_responses(
+                    batch_prompts,
+                    llm=llm,
+                    sampling_params=sampling_params
+                )
+            except Exception as exc:
+                # Mark batch as failed
+                print("Error during LLM response generation:", str(exc))
+                for idx in range(start, end):
+                    records[idx]["evaluation_result"] = "llm_error"
+                    records[idx]["error"] = str(exc)
+                    overall["evaluation_failed"] += 1
+                continue
+
+            # Store batch responses
+            for i, resp in enumerate(responses):
+                rec_idx = start + i
+                if rec_idx >= len(records):
+                    break
+                records[rec_idx]["llm_answer"] = resp
 
     # Phase 2: Judge collected answers
-    records_to_judge = [r for r in records if r["evaluation_result"] is None]
+    # Phase 2: Judge collected answers
+    indices_to_judge = [i for i, r in enumerate(records) if r["evaluation_result"] is None]
 
-    for record in tqdm(records_to_judge, desc="Judging answers"):
-        question = record["question"]
-        answer = record["llm_answer"]
-        benchmark_type = record["benchmark_type"]
-        correct_answer = record["correct_answer"]
-        qtype = record["qtype"]
-        scale = record["scale"]
+    if judge_use_openai:
+        # Per-sample judging via OpenAI (unchanged behavior)
+        for idx in tqdm(indices_to_judge, desc="Judging answers"):
+            record = records[idx]
+            question = record["question"]
+            answer = record["llm_answer"]
+            benchmark_type = record["benchmark_type"]
+            correct_answer = record["correct_answer"]
+            qtype = record["qtype"]
+            scale = record["scale"]
 
-        judge_prompt = build_judge_prompt(question, answer, str(correct_answer), benchmark_type)
+            judge_prompt = build_judge_prompt(question, answer, str(correct_answer), benchmark_type)
 
-        try:
-            judge_response = call_model(judge_prompt, judge_model, judge_use_openai)
-            record["judge_response"] = judge_response
-        except Exception as exc:
-            record["evaluation_result"] = "judge_error"
-            record["error"] = str(exc)
-            overall["evaluation_failed"] += 1
-            continue
+            try:
+                judge_response = call_model(judge_prompt, judge_model, judge_use_openai)
+                record["judge_response"] = judge_response
+            except Exception as exc:
+                record["evaluation_result"] = "judge_error"
+                record["error"] = str(exc)
+                overall["evaluation_failed"] += 1
+                continue
 
-        decision = extract_judge_decision(record["judge_response"])
-        if decision is None:
-            record["evaluation_result"] = "evaluation_failed"
-            overall["evaluation_failed"] += 1
-        elif decision == "yes":
-            record["evaluation_result"] = "yes"
-            overall["correct"] += 1
-            by_qtype[qtype]["correct"] += 1
-            by_scale[scale]["correct"] += 1
-        else:
-            record["evaluation_result"] = "no"
-            overall["incorrect"] += 1
+            decision = extract_judge_decision(record["judge_response"])
+            if decision is None:
+                record["evaluation_result"] = "evaluation_failed"
+                overall["evaluation_failed"] += 1
+            elif decision == "yes":
+                record["evaluation_result"] = "yes"
+                overall["correct"] += 1
+                by_qtype[qtype]["correct"] += 1
+                by_scale[scale]["correct"] += 1
+            else:
+                record["evaluation_result"] = "no"
+                overall["incorrect"] += 1
+    else:
+        # Batched judging via vLLM
+        judge_prompts: list[str] = []
+        for idx in indices_to_judge:
+            record = records[idx]
+            judge_prompts.append(
+                build_judge_prompt(record["question"], record["llm_answer"], str(record["correct_answer"]), record["benchmark_type"])
+            )
+        del llm
+        torch.cuda.empty_cache()
+        llm = LLM(model=judge_model, tensor_parallel_size=vllm_world_size, max_num_seqs=vllm_batch_size, max_model_len=4096)
+        sampling_params = SamplingParams(max_tokens=2048, top_k=20, top_p=0.95, temperature=0.7, min_p=0.0, stop_token_ids=[151645, 151643])
+
+        # Run judge prompts in batches
+        for start in tqdm(
+            range(0, len(judge_prompts), vllm_batch_size),
+            desc="Judging answers",
+            total=math.ceil(len(judge_prompts) / vllm_batch_size) if len(judge_prompts) else 0,
+        ):
+            end = min(len(judge_prompts), start + vllm_batch_size)
+            batch_prompts = judge_prompts[start:end]
+            try:
+                judge_responses = get_llm_responses(
+                    batch_prompts,
+                    llm=llm,
+                    sampling_params=sampling_params,
+                    world_size=vllm_world_size,
+                )
+            except Exception as exc:
+                # Mark batch as judge_error
+                for j in range(start, end):
+                    rec_idx = indices_to_judge[j]
+                    records[rec_idx]["evaluation_result"] = "judge_error"
+                    records[rec_idx]["error"] = str(exc)
+                    overall["evaluation_failed"] += 1
+                continue
+
+            for i, resp in enumerate(judge_responses):
+                j = start + i
+                if j >= len(indices_to_judge):
+                    break
+                rec_idx = indices_to_judge[j]
+                record = records[rec_idx]
+                record["judge_response"] = resp
+                decision = extract_judge_decision(resp)
+                qtype = record["qtype"]
+                scale = record["scale"]
+
+                if decision is None:
+                    record["evaluation_result"] = "evaluation_failed"
+                    overall["evaluation_failed"] += 1
+                elif decision == "yes":
+                    record["evaluation_result"] = "yes"
+                    overall["correct"] += 1
+                    by_qtype[qtype]["correct"] += 1
+                    by_scale[scale]["correct"] += 1
+                else:
+                    record["evaluation_result"] = "no"
+                    overall["incorrect"] += 1
 
     with output_path.open("w", encoding="utf-8") as results_file:
         for record in records:
@@ -360,6 +498,18 @@ def parse_args() -> argparse.Namespace:
         default=1.0,
         help="Fraction of samples per (scale, qtype) to evaluate (0-1).",
     )
+    parser.add_argument(
+        "--vllm-batch-size",
+        type=int,
+        default=16,
+        help="Batch size to use when calling vLLM for generation/judging.",
+    )
+    parser.add_argument(
+        "--vllm-world-size",
+        type=int,
+        default=None,
+        help="Optional tensor-parallel world size for vLLM to enable multi-GPU (best-effort).",
+    )
     return parser.parse_args()
 
 
@@ -380,6 +530,8 @@ def main() -> None:
         hf_split=args.hf_split,
         hf_token=args.hf_token,
         share=args.share,
+        vllm_batch_size=args.vllm_batch_size,
+        vllm_world_size=args.vllm_world_size,
     )
 
 
