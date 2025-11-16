@@ -1,64 +1,59 @@
 # How well do LLMs reason over tabular data, really?
 
-This repository contains the benchmark suite and replication package for our paper "How well do LLMs reason over tabular data, really?", which was published at the 4th Table Representation Learning Workshop at ACL 2025. It allows you to reproduce our benchmark results and evaluate language models on their table reasoning capabilities.
+This repository contains the benchmark suite and replication package for our paper "How well do LLMs reason over tabular data, really?", presented at the 4th Table Representation Learning Workshop at ACL 2025. It lets you reproduce the reasoning tests from the paper and explore how different models perform on table reasoning challenges.
 
-[Read our paper](https://www.alphaxiv.org/abs/2505.07453) for a detailed analysis of the benchmark results and findings.
+[Read the paper](https://www.alphaxiv.org/abs/2505.07453) for a deeper discussion of the results.
 
-## Testing models
+## Simple benchmark runner
 
-To replicate the results from our paper or test new available models, follow these steps:
+The most accessible way to rerun the reasoning test from the paper is `simple_benchmark.py`. It loads the Hugging Face table datasets, builds prompts that mirror our published evaluation, and drives both question answering and judgement either through vLLM (preferred) or OpenAI when you want to avoid local GPU requirements.
 
-### Prerequisites
-
-Before installing our TabReasBench package, you need to have Ollama installed and the required model pulled:
-
-1. Install Ollama from [ollama.com](https://ollama.com)
-2. Pull the required model:
-```bash
-ollama pull qwen2.5:32b
-```
-
-### Hardware Requirements
-
-- For running the benchmarks: Any GPU that can run Ollama models
-- For evaluating results: GPU with at least 20GB VRAM (required for qwen2.5:32b used as LLM-as-a-judge)
-
-### Installation
-
-You can install TabReasBench using pip:
+When you run with vLLM the script needs a CUDA-enabled GPU with enough memory to host the chosen model (qwen2.5:32b needs ≳20 GB of VRAM). If you don't have a compatible GPU you can still use the OpenAI client path, but you lose the reproducibility benefits of running fully on-device.
 
 ```bash
-git clone https://github.com/trl-lab/tabular-robustness/
-cd tabular-robustness
-pip install .
+python simple_benchmark.py \
+  --model qwen2.5:32b \
+  --output simple_results.jsonl \
+  --summary simple_results_summary.json \
+  --judge-model qwen2.5:32b \
 ```
 
-### Running the Benchmarks
+This script:
+1. Loads the [`trl-lab/tabular-reasoning`](https://huggingface.co/datasets/trl-lab/tabular-reasoning) dataset from Hugging Face.
+2. Renders every record into a prompt with tables, questions, and step-by-step instructions.
+3. Calls vLLM (or OpenAI) to answer and to judge each response using the same evaluation logic as the paper.
+4. Emits per-sample JSONL records plus an accuracy summary similar to what we reported.
 
-To replicate our benchmark results, run:
+If you want to dive into the exact dataset loaders, aggregation logic, or LaTeX exports that powered the paper you can explore the `src/` package. Those `run_*` scripts orchestrate the base/missing/shuffle benchmarks at multiple scales and represent the “more in-depth” code behind the published numbers. For a reference to every CLI option you can pass to `simple_benchmark.py`, see [SIMPLE_BENCHMARK_ARGS.md](./SIMPLE_BENCHMARK_ARGS.md).
 
-```bash
-tabreasbench --model qwen2.5:32b --output_dir benchmark_results
+## Project layout
+
+```
+tabular-robustness/
+├── simple_benchmark.py   # Lightweight runner for the reasoning benchmark (uses vLLM/OpenAI).
+├── tabreasbench/         # Core CLI helpers, evaluation scripts, and the `run_*` suite.
+│   ├── data/             # Local copy of the datasets and scalings used during benchmarking.
+│   ├── src/              # Full benchmark orchestration, dataset parsing, aggregation, and LaTeX exports behind the paper’s reports.
+│   ├── cli.py
+│   ├── run_benchmark.py
+│   └── run_full_benchmark.py
+├── pyproject.toml
+├── requirements.txt     # Lists the runtime dependencies used by `simple_benchmark.py`.
+├── README.md            # This document.
+└── LICENSE
 ```
 
-This will:
-1. Run all benchmarks (base, missing, and shuffle) across different scales
-2. Evaluate the results using qwen2.5:32b as the judge model
-3. Generate aggregated results and LaTeX tables
+`simple_benchmark.py` sits at the repository root for quick experimentation, while `tabreasbench/src/` contains the more in-depth benchmark code referenced in the paper.
 
-The results will be organized in the specified output directory:
-```
-output_dir/
-├── raw_results/
-│   └── results_qwen2.5_32b.csv           # Raw model outputs and ground truth
-├── evaluated_results/
-│   └── results_qwen2.5_32b_evaluated.csv # Results with correctness evaluation
-└── aggregated_results/
-    ├── overall_summary.csv                # Overall performance metrics
-    ├── detailed_results.csv               # Per-dataset performance breakdown
-    ├── overall_summary.tex                # LaTeX table of overall results
-    └── detailed_results.tex               # LaTeX table of detailed results
-```
+## Getting started
+
+1. Clone the repo.
+2. Install dependencies:
+   ```bash
+   pip install -r requirements.txt
+   ```
+3. Ensure your GPU has enough VRAM for the vLLM model you want to run.
+4. Run `simple_benchmark.py` (shown above) or explore the `src/` roster of `run_*` scripts for full benchmark sweeps.
 
 ## Citation
 
@@ -76,7 +71,3 @@ Plain text citation:
 ```
 Wolff, C., & Hulsebos, M. How well do LLMs reason over tabular data, really?. In The 4th Table Representation Learning Workshop at ACL 2025.
 ```
-
-## License
-
-This project is licensed under the MIT License - see the LICENSE file for details.

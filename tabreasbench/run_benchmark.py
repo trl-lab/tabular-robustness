@@ -10,19 +10,19 @@ from typing import List, Dict, Any
 from pathlib import Path
 
 # Import functions from different benchmark types
-from .src.base.base import get_questions_and_answers as get_qna_base
-from .src.base.base import process_databases as process_db_base
-from .src.base.base import generate_prompts as generate_prompts_base
+from tabreasbench.src.base.base import get_questions_and_answers as get_qna_base
+from tabreasbench.src.base.base import process_databases as process_db_base
+from tabreasbench.src.base.base import generate_prompts as generate_prompts_base
 
-from .src.missing.missing import get_questions_and_answers as get_qna_missing
-from .src.missing.missing import process_databases as process_db_missing
-from .src.missing.missing import generate_prompts as generate_prompts_missing
+from tabreasbench.src.missing.missing import get_questions_and_answers as get_qna_missing
+from tabreasbench.src.missing.missing import process_databases as process_db_missing
+from tabreasbench.src.missing.missing import generate_prompts as generate_prompts_missing
 
-from .src.shuffle.shuffle import get_questions_and_answers as get_qna_shuffle
-from .src.shuffle.shuffle import process_databases as process_db_shuffle
-from .src.shuffle.shuffle import generate_prompts as generate_prompts_shuffle
+from tabreasbench.src.shuffle.shuffle import get_questions_and_answers as get_qna_shuffle
+from tabreasbench.src.shuffle.shuffle import process_databases as process_db_shuffle
+from tabreasbench.src.shuffle.shuffle import generate_prompts as generate_prompts_shuffle
 
-from .src.llm_interface import get_llm_response, get_openai_response
+from tabreasbench.src.llm_interface import get_llm_response, get_openai_response
 
 def get_package_data_dir() -> Path:
     """Get the absolute path to the package's data directory."""
@@ -82,7 +82,7 @@ def run_benchmark(
         return
 
     # Determine if we should use OpenAI based on the model name
-    use_openai = llm.startswith('gpt-')
+    use_openai = llm.startswith('gpt-') and not "oss" in llm
     
     # Setup CSV file for this run
     output_path = os.path.join(output_dir, f"results_{llm.replace(':', '_')}.csv")

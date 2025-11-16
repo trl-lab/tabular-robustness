@@ -62,7 +62,7 @@ def generate_prompts(question: str, tables: dict):
     prompt = f"Answer the question based on these tables:\n"
     for table_name, table_df in tables.items():
         prompt += f"\nTable: {table_name}\n"
-        prompt += table_df.to_string(index=False)
+        prompt += table_df.to_csv()
         prompt += "\n"
     prompt += f"\nQuestion: {question}\n"
     prompt = prompt + '''This question has only one correct answer. Please
